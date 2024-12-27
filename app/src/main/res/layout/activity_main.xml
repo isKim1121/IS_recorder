@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    tools:context=".MainActivity"
+    android:gravity="center">
+
+    <Button
+        android:id="@+id/btnSelectAudio"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="음원 선택"
+        android:layout_marginTop="150dp"/>
+
+    <Button
+        android:id="@+id/btnPlayAudio"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="재생 및 녹음"
+        android:layout_marginTop="30dp"
+        android:enabled="false"/>  <!-- 음원 선택 전까지 비활성화 -->
+
+</LinearLayout>
