@@ -1,6 +1,7 @@
 package com.example.insurecorder
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -8,6 +9,7 @@ import android.media.AudioTrack
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -45,12 +47,29 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+
+
 // MainActivity 설정
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MainScreen()
+        }
+        requestBatteryOptimizationException()
+    }
+    private fun requestBatteryOptimizationException() {
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        val packageName = packageName
+
+        // 현재 앱이 배터리 최적화에서 제외되어 있는지 확인
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            val intent = Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+            ).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
         }
     }
 }
@@ -161,7 +180,7 @@ fun startPlaybackAndRecording(
                 val wavFile = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), fileName)
 
                 if (rawFile.exists() && rawFile.length() > 1024) {
-                    convertRawToWav(rawFile, wavFile, 48000, 1)
+                    convertRawToWav(rawFile, wavFile, 96000, 1)
                     copyWavToDownload(context, wavFile, fileName)
                     println("WAV 파일 저장 완료: ${wavFile.absolutePath}")
                     onRecordingComplete(wavFile.absolutePath)
@@ -182,10 +201,9 @@ var audioTrack: AudioTrack? = null
 
 fun playWavWithAudioTrack(
     context: Context,
-
     audioUri: Uri,
-onPlaybackStart: () -> Unit,
-onPlaybackComplete: () -> Unit
+    onPlaybackStart: () -> Unit,
+    onPlaybackComplete: () -> Unit
 ) {
     val inputStream = context.contentResolver.openInputStream(audioUri) ?: return
     val wavHeaderSize = 44
@@ -196,49 +214,56 @@ onPlaybackComplete: () -> Unit
 
     val sampleRate = extractSampleRateFromWavHeader(ByteArrayInputStream(audioData))
 
+    // 기존 AudioTrack 해제
     audioTrack?.apply {
         stop()
         release()
     }
     audioTrack = null
 
-    val bufferSize = AudioTrack.getMinBufferSize(
-        sampleRate,
-        AudioFormat.CHANNEL_OUT_MONO,
-        AudioFormat.ENCODING_PCM_16BIT
-    )
+    try {
+        val bufferSize = AudioTrack.getMinBufferSize(
+            sampleRate,
+            //AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.CHANNEL_OUT_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ) * 2  // 버퍼 크기를 두 배로 설정해 안정성 강화
 
-    audioTrack = AudioTrack.Builder()
-        .setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-        )
-        .setAudioFormat(
-            AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .build()
-        )
-        .setBufferSizeInBytes(bufferSize)
-        .setTransferMode(AudioTrack.MODE_STREAM)
-        .build()
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    //.setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build()
+            )
+            .setBufferSizeInBytes(bufferSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
 
-    audioTrack?.apply {
-        setVolume(1.0f)
-        play()
+        audioTrack?.apply {
+            setVolume(1.0f)
+            play()
 
-        Thread {
-            val bytesWritten = write(audioData, 0, audioData.size)
-            Log.i("AudioPlayer", "$bytesWritten 바이트 성공적으로 씀.")
-            stop()
-            release()
-            audioTrack = null
-            onPlaybackComplete()
-        }.start()
-        onPlaybackStart()
+            Thread {
+                val bytesWritten = write(audioData, 0, audioData.size)
+                Log.i("AudioPlayer", "$bytesWritten 바이트 성공적으로 씀.")
+                stop()
+                release()
+                audioTrack = null
+                onPlaybackComplete()
+            }.start()
+            onPlaybackStart()
+        }
+    } catch (e: Exception) {
+        Log.e("AudioTrack", "AudioTrack 초기화 실패: ${e.message}")
     }
 }
 
@@ -272,7 +297,8 @@ fun extractSampleRateFromWavHeader(inputStream: java.io.InputStream): Int {
 
 // RawAudioRecorder 클래스
 class RawAudioRecorder(private val context: Context) {
-    private val sampleRate = 48000
+    //private val sampleRate = 48000
+    private val sampleRate = 96000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
@@ -282,30 +308,35 @@ class RawAudioRecorder(private val context: Context) {
     private var outputStream: OutputStream? = null
 
     fun startRecording(fileName: String) {
-        audioRecord = AudioRecord(
-            android.media.MediaRecorder.AudioSource.UNPROCESSED,
-            sampleRate,
-            channelConfig,
-            audioFormat,
-            bufferSize
-        )
+        try {
+            audioRecord = AudioRecord(
+                android.media.MediaRecorder.AudioSource.UNPROCESSED,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                bufferSize
+            )
 
-        val outputFile = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "$fileName.raw")
-        outputStream = FileOutputStream(outputFile)
-        audioRecord.startRecording()
-        isRecording = true
+            val outputFile = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "$fileName.raw")
+            outputStream = FileOutputStream(outputFile)
+            audioRecord.startRecording()
+            isRecording = true
 
-        Thread {
-            val data = ByteArray(bufferSize)
-            while (isRecording) {
-                val read = audioRecord.read(data, 0, data.size)
-                if (read > 0) {
-                    outputStream?.write(data, 0, read)
+            Thread {
+                val data = ByteArray(bufferSize)
+                while (isRecording) {
+                    val read = audioRecord.read(data, 0, data.size)
+                    if (read > 0) {
+                        outputStream?.write(data, 0, read)
+                    }
                 }
-            }
-            stopRecording()
-        }.start()
+                stopRecording()
+            }.start()
+        } catch (e: Exception) {
+            Log.e("AudioRecord", "AudioRecord 초기화 실패: ${e.message}")
+        }
     }
+
 
     fun stopRecording() {
         if (isRecording) {
@@ -349,16 +380,31 @@ fun convertRawToWav(rawFile: File, wavFile: File, sampleRate: Int, channels: Int
 
 // WAV 파일을 다운로드 폴더로 복사
 fun copyWavToDownload(context: Context, sourceFile: File, fileName: String) {
-    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    val destFile = File(downloadsDir, fileName)
+    val resolver = context.contentResolver
+    val contentValues = android.content.ContentValues().apply {
+        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+    }
 
-    sourceFile.inputStream().use { input ->
-        destFile.outputStream().use { output ->
-            input.copyTo(output)
-        }
+    val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+
+    if (uri == null) {
+        Log.e("FileSave", "WAV 파일을 저장할 수 없습니다.")
+        return
+    }
+
+    try {
+        resolver.openOutputStream(uri)?.use { outputStream ->
+            sourceFile.inputStream().use { input ->
+                input.copyTo(outputStream)
+                Log.i("FileSave", "WAV 파일이 Downloads에 저장되었습니다: $fileName")
+            }
+        } ?: Log.e("FileSave", "OutputStream이 null입니다.")
+    } catch (e: Exception) {
+        Log.e("FileSave", "파일 복사 중 오류 발생: ${e.message}")
     }
 }
-
 // 권한 요청
 @Composable
 fun RequestPermissions(onResult: (Boolean) -> Unit) {
