@@ -53,6 +53,9 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        checkDeviceSupportedSampleRates()
+
         setContent {
             MainScreen()
         }
@@ -72,6 +75,20 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         }
     }
+    // MainActivity 내부
+
+    private fun checkDeviceSupportedSampleRates() {
+        val testRates = intArrayOf(44100, 48000, 96000, 192000)
+        for (rate in testRates) {
+            val bufferSize = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            if (bufferSize > 0) {
+                Log.i("AudioRecord", "✅ 디바이스가 지원하는 샘플레이트: $rate Hz (버퍼 크기: $bufferSize 바이트)")
+            } else {
+                Log.w("AudioRecord", "⚠️ 디바이스가 $rate Hz를 지원하지 않음.")
+            }
+        }
+    }
+
 }
 
 // 메인 화면 UI
@@ -180,7 +197,7 @@ fun startPlaybackAndRecording(
                 val wavFile = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), fileName)
 
                 if (rawFile.exists() && rawFile.length() > 1024) {
-                    convertRawToWav(rawFile, wavFile, 96000, 1)
+                    convertRawToWav(rawFile, wavFile, 192000, 1)
                     copyWavToDownload(context, wavFile, fileName)
                     println("WAV 파일 저장 완료: ${wavFile.absolutePath}")
                     onRecordingComplete(wavFile.absolutePath)
@@ -297,11 +314,14 @@ fun extractSampleRateFromWavHeader(inputStream: java.io.InputStream): Int {
 
 // RawAudioRecorder 클래스
 class RawAudioRecorder(private val context: Context) {
-    //private val sampleRate = 48000
-    private val sampleRate = 96000
+    //private val sampleRate = 48000 // recording sampling rate
+    //private val sampleRate = 192000 // recording sampling rate
+    private val sampleRate = getSupportedSampleRate() // 가장 높은 지원 샘플링 레이트로 설정
+
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+
 
     private lateinit var audioRecord: AudioRecord
     private var isRecording = false
@@ -346,6 +366,41 @@ class RawAudioRecorder(private val context: Context) {
             outputStream?.close()
         }
     }
+    private fun getSupportedSampleRate(): Int {
+        val possibleRates = intArrayOf(192000, 96000, 48000, 44100) // 높은 샘플레이트부터 테스트
+        var selectedRate = -1
+
+        for (rate in possibleRates) {
+            try {
+                val recorder = AudioRecord(
+                    android.media.MediaRecorder.AudioSource.UNPROCESSED,  // UNPROCESSED가 지원 안되면 DEFAULT로 변경 가능
+                    rate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                )
+
+                if (recorder.state == AudioRecord.STATE_INITIALIZED) {
+                    Log.i("AudioRecord", "✅ 지원되는 샘플링 레이트: $rate Hz")
+                    selectedRate = rate
+                    recorder.release()
+                    break
+                } else {
+                    Log.w("AudioRecord", "⚠️ 샘플링 레이트 $rate Hz는 지원되지 않음.")
+                }
+
+                recorder.release()
+            } catch (e: Exception) {
+                Log.e("AudioRecord", "❌ 샘플링 레이트 $rate Hz 초기화 실패: ${e.message}")
+            }
+        }
+
+        return if (selectedRate != -1) selectedRate else {
+            Log.e("AudioRecord", "❌ 사용 가능한 샘플링 레이트를 찾을 수 없음. 기본값(48000Hz) 사용.")
+            48000
+        }
+    }
+
 }
 
 // RAW를 WAV로 변환
